@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#f7f4ec">
+<link rel="manifest" href="manifest.json">
+<title>墨语 · 手写 AI 笔记</title>
+<!-- 手写风格中文字体（霞鹜文楷），按需分片加载；加载失败会退回系统楷体 -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-webfont@1.7.0/lxgwwenkai-regular.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #f7f4ec;
+    font-family: "LXGW WenKai", KaiTi, STKaiti, "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+  #bar { position: fixed; left: 0; right: 0; top: 0; height: 48px; display: flex; align-items: center;
+    gap: 6px; padding: 0 8px; background: #efe9dc; border-bottom: 1px solid #d9d0bd; box-sizing: border-box;
+    overflow-x: auto; white-space: nowrap; z-index: 5; }
+  #bar button, #bar select { font: inherit; font-size: 16px; height: 36px; padding: 0 12px; border: 1px solid #c9bda4; border-radius: 8px; background: #fffdf8; color: #333; flex: none; }
+  #bar button.on { background: #2b2b2b; color: #fff; border-color: #2b2b2b; }
+  #bar button.ask { background: #1f4fbf; color: #fff; border-color: #1f4fbf; }
+  #bar select { max-width: 180px; }
+  #bar .sep { width: 1px; height: 26px; background: #cfc5ae; flex: none; }
+  #status { margin-left: auto; color: #7a6f5a; font-size: 14px; padding-left: 8px; flex: none; }
+  #cv { position: fixed; left: 0; top: 48px; touch-action: none; display: block; }
+  #mask { position: fixed; inset: 0; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0,0,0,.35);
+    display: none; z-index: 10; align-items: center; justify-content: center; }
+  #mask.show { display: flex; }
+  #dlg { background: #fffdf8; border-radius: 12px; padding: 18px 20px; width: 92%; max-width: 520px;
+    max-height: 88%; overflow-y: auto; box-sizing: border-box; -webkit-user-select: text; user-select: text; }
+  #dlg h3 { margin: 0 0 12px; }
+  #dlg label { display: block; margin: 10px 0 4px; font-size: 15px; color: #555; }
+  #dlg input[type=text], #dlg input[type=password], #dlg input[type=number], #dlg textarea {
+    width: 100%; box-sizing: border-box; font: inherit; font-size: 16px; padding: 8px; border: 1px solid #ccc; border-radius: 6px; }
+  #dlg textarea { height: 70px; }
+  #dlg .row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  #dlg .row label { margin: 0; }
+  #dlg .tip { font-size: 13px; color: #888; margin-top: 4px; }
+  #dlg .btns { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+  #dlg .btns button { font: inherit; font-size: 16px; padding: 8px 18px; border-radius: 8px; border: 1px solid #bbb; background: #fff; }
+  #dlg .btns button.primary { background: #1f4fbf; color: #fff; border-color: #1f4fbf; }
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: rgba(40,40,40,.92);
+    color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 15px; display: none; z-index: 20; max-width: 90%; }
+  #err { position: fixed; left: 0; right: 0; bottom: 0; background: #b00020; color: #fff; font: 13px monospace;
+    padding: 8px; white-space: pre-wrap; display: none; z-index: 30; max-height: 40%; overflow: auto; }
+</style>
+<script>
+  // 放在最前面、只用最老的语法：即使后面的代码在旧浏览器里报错，也能在屏幕上看到原因，而不是黑屏
+  window.onerror = function (msg, src, line, col) {
+    var el = document.getElementById('err');
+    if (!el) { alert('出错: ' + msg + ' @' + line + ':' + col); return; }
+    el.style.display = 'block';
+    el.textContent += '出错: ' + msg + '  (行 ' + line + ':' + col + ')\n浏览器: ' + navigator.userAgent + '\n';
+  };
+</script>
+</head>
+<body>
+<div id="bar">
+  <select id="noteSel" title="切换笔记"></select>
+  <button id="bNew">新建</button>
+  <button id="bDel">删除</button>
+  <span class="sep"></span>
+  <button id="bPen" class="on">笔</button>
+  <button id="bEraser">橡皮</button>
+  <button id="bUndo">撤销</button>
+  <button id="bClear">清页</button>
+  <span class="sep"></span>
+  <button id="bAsk" class="ask">问 AI</button>
+  <button id="bSet">设置</button>
+  <span id="status"></span>
+</div>
+<canvas id="cv"></canvas>
+
+<div id="mask"><div id="dlg">
+  <h3>设置</h3>
+  <label>DeepSeek API Key</label>
+  <input id="sKey" type="password" placeholder="sk-..." autocomplete="off">
+  <div class="tip">在 platform.deepseek.com 申请。Key 只保存在本机浏览器里。</div>
+  <label>接口地址（OpenAI 兼容）</label>
+  <input id="sUrl" type="text">
+  <label>模型名</label>
+  <input id="sModel" type="text">
+  <div class="tip">需要能看图的模型。DeepSeek 用 deepseek-flash。</div>
+  <div class="row"><input id="sThink" type="checkbox"><label for="sThink">开启深度思考（更准但更慢）</label></div>
+  <div class="row"><input id="sPenOnly" type="checkbox"><label for="sPenOnly">只用手写笔书写（手指用来上下滑动）</label></div>
+  <label>停笔几秒后自动问 AI（0 = 只用按钮）</label>
+  <input id="sIdle" type="number" min="0" max="30" step="0.5">
+  <label>AI 回复最多约多少字</label>
+  <input id="sMax" type="number" min="20" max="1000" step="10">
+  <label>AI 字号</label>
+  <input id="sFont" type="number" min="14" max="48" step="1">
+  <label>给 AI 的额外要求（可选，例如“你是我的英语老师，用英文回复并纠正我的错误”）</label>
+  <textarea id="sPersona"></textarea>
+  <div class="btns">
+    <button id="sTest">测试连接</button>
+    <button id="sCancel">取消</button>
+    <button id="sSave" class="primary">保存</button>
+  </div>
+</div></div>
+<div id="toast"></div>
+<div id="err"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------- 常量与状态 ----------
+  var BAR_H = 48;
+  var LINE_GAP = 48;          // 横线间距
+  var INK = '#1d1d1f';        // 用户墨水
+  var AI_INK = '#1f4fbf';     // AI 墨水
+  var AI_FONT = '"LXGW WenKai", KaiTi, STKaiti, "Kaiti SC", serif';
+  var STORE_NOTES = 'inkai.notes.v1';
+  var STORE_SET = 'inkai.settings.v1';
+  var STORE_CUR = 'inkai.current.v1';
+
+  var defaults = {
+    key: '', url: 'https://api.deepseek.com', model: 'deepseek-flash', think: false,
+    penOnly: false, idle: 2.5, maxChars: 150, fontSize: 26, persona: ''
+  };
+  var settings = load(STORE_SET, {});
+  for (var k in defaults) if (!(k in settings)) settings[k] = defaults[k];
+
+  var notes = load(STORE_NOTES, null);
+  var curId = load(STORE_CUR, null);
+  if (!notes || typeof notes !== 'object' || !Object.keys(notes).length) { notes = {}; curId = newNote(); }
+  if (!notes[curId]) curId = Object.keys(notes)[0];
+  var note = notes[curId];
+  note.strokes.forEach(calcBox);
+
+  var cv = document.getElementById('cv');
+  var ctx = cv.getContext('2d');
+  var dpr = window.devicePixelRatio || 1;
+  var W = 0, H = 0, scrollY = note.scrollY || 0;
+  var tool = 'pen';
+  var cur = null;             // 正在写的笔画
+  var erasing = false;
+  var touches = {};           // 触摸点，用于手指滚动
+  var scrollMode = false, lastTouchY = 0;
+  var undoStack = [];
+  var idleTimer = null;
+  var busy = false;
+  var animTimer = null;
+
+  // ---------- 工具函数 ----------
+  function load(key, def) {
+    try { var v = localStorage.getItem(key); return v ? JSON.parse(v) : def; } catch (e) { return def; }
+  }
+  var saveTimer = null;
+  function save() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      try {
+        note.scrollY = scrollY;
+        localStorage.setItem(STORE_NOTES, JSON.stringify(notes, function (k, v) { return (k === 'b' || k === 'shown') ? undefined : v; }));
+        localStorage.setItem(STORE_CUR, JSON.stringify(curId));
+      } catch (e) { toast('保存失败：存储空间可能满了，请删除一些旧笔记'); }
+    }, 400);
+  }
+  function saveSettings() { localStorage.setItem(STORE_SET, JSON.stringify(settings)); }
+  function $(id) { return document.getElementById(id); }
+  function toast(msg, ms) {
+    var t = $('toast'); t.textContent = msg; t.style.display = 'block';
+    clearTimeout(toast._t); toast._t = setTimeout(function () { t.style.display = 'none'; }, ms || 3000);
+  }
+  function status(s) { $('status').textContent = s || ''; }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function newNote() {
+    var d = new Date(), id = 'n' + d.getTime();
+    notes[id] = { id: id, title: '笔记 ' + (d.getMonth() + 1) + '-' + d.getDate() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()),
+      strokes: [], blocks: [], history: [], scrollY: 0, created: d.getTime() };
+    return id;
+  }
+  function calcBox(s) {
+    var p = s.p, x1 = 1e9, y1 = 1e9, x2 = -1e9, y2 = -1e9;
+    for (var i = 0; i < p.length; i += 3) {
+      var r = p[i + 2] / 2;
+      if (p[i] - r < x1) x1 = p[i] - r; if (p[i] + r > x2) x2 = p[i] + r;
+      if (p[i + 1] - r < y1) y1 = p[i + 1] - r; if (p[i + 1] + r > y2) y2 = p[i + 1] + r;
+    }
+    s.b = [x1, y1, x2, y2];
+  }
+  function blockBox(bl) {
+    var lh = bl.fs * 1.5;
+    return [bl.x, bl.y, bl.x + bl.w, bl.y + bl.lines.length * lh];
+  }
+  function contentBottom() {
+    var m = 0;
+    note.strokes.forEach(function (s) { if (s.b && s.b[3] > m) m = s.b[3]; });
+    note.blocks.forEach(function (bl) { var b = blockBox(bl); if (b[3] > m) m = b[3]; });
+    return m;
+  }
+  function pageHeight() { return Math.max(H * 2, contentBottom() + H); }
+  function clampScroll() { scrollY = Math.max(0, Math.min(scrollY, pageHeight() - H)); }
+
+  // ---------- 画布 ----------
+  function resize() {
+    W = window.innerWidth; H = window.innerHeight - BAR_H;
+    dpr = window.devicePixelRatio || 1;
+    cv.style.width = W + 'px'; cv.style.height = H + 'px';
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    clampScroll(); render();
+  }
+
+  function setView() { ctx.setTransform(dpr, 0, 0, dpr, 0, -scrollY * dpr); }
+
+  function render() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#fffdf6'; ctx.fillRect(0, 0, cv.width, cv.height);
+    setView();
+    // 横线
+    ctx.strokeStyle = '#e6dfcf'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    var start = Math.floor(scrollY / LINE_GAP) * LINE_GAP + LINE_GAP;
+    for (var y = start; y < scrollY + H; y += LINE_GAP) { ctx.moveTo(0, y + 0.5); ctx.lineTo(W, y + 0.5); }
+    ctx.stroke();
+    // 笔画
+    var top = scrollY - 50, bot = scrollY + H + 50;
+    note.strokes.forEach(function (s) { if (!s.b || (s.b[3] >= top && s.b[1] <= bot)) drawStroke(ctx, s); });
+    // AI 文字
+    note.blocks.forEach(function (bl) { var b = blockBox(bl); if (b[3] >= top && b[1] <= bot) drawBlock(ctx, bl); });
+    // “AI 正在看”提示
+    if (busy && busy.box) {
+      var bb = busy.box;
+      ctx.fillStyle = AI_INK; ctx.globalAlpha = 0.6;
+      ctx.font = '20px ' + AI_FONT; ctx.textBaseline = 'top';
+      ctx.fillText('· · ·', bb[0], bb[3] + 10);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function drawStroke(c, s) {
+    var p = s.p;
+    c.strokeStyle = s.c || INK; c.fillStyle = s.c || INK;
+    c.lineCap = 'round'; c.lineJoin = 'round';
+    if (p.length <= 3) { c.beginPath(); c.arc(p[0], p[1], p[2] / 2, 0, Math.PI * 2); c.fill(); return; }
+    for (var i = 3; i < p.length; i += 3) seg(c, p, i);
+  }
+  function seg(c, p, i) {
+    c.lineWidth = (p[i - 1] + p[i + 2]) / 2;
+    c.beginPath(); c.moveTo(p[i - 3], p[i - 2]); c.lineTo(p[i], p[i + 1]); c.stroke();
+  }
+  function drawBlock(c, bl) {
+    var lh = bl.fs * 1.5, left = bl.shown == null ? 1e9 : bl.shown;
+    c.fillStyle = AI_INK; c.textBaseline = 'top';
+    c.font = bl.fs + 'px ' + AI_FONT;
+    for (var i = 0; i < bl.lines.length && left > 0; i++) {
+      var line = bl.lines[i];
+      var t = left >= line.length ? line : line.slice(0, left);
+      c.fillText(t, bl.x, bl.y + i * lh + (lh - bl.fs) / 2);
+      left -= line.length;
+    }
+  }
+
+  // ---------- 输入 ----------
+  function pt(e) {
+    var r = cv.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top + scrollY };
+  }
+  function width(e) {
+    var base = 2.6;
+    if (e.pointerType === 'pen') {
+      var pr = e.pressure || 0.5;
+      return Math.round(base * (0.35 + pr * 1.3) * 10) / 10;
+    }
+    return base;
+  }
+  function touchCount() { return Object.keys(touches).length; }
+  function avgTouchY() {
+    var s = 0, n = 0; for (var k in touches) { s += touches[k]; n++; } return n ? s / n : 0;
+  }
+  function pushUndo() {
+    undoStack.push(JSON.stringify({ s: note.strokes, b: note.blocks }, function (k, v) { return k === 'b' && Array.isArray(v) && typeof v[0] === 'number' ? undefined : v; }));
+    if (undoStack.length > 60) undoStack.shift();
+  }
+
+  cv.addEventListener('pointerdown', function (e) {
+    e.preventDefault();
+    try { cv.setPointerCapture(e.pointerId); } catch (x) {}
+    if (e.pointerType === 'touch') {
+      touches[e.pointerId] = e.clientY;
+      if (settings.penOnly || touchCount() >= 2) {
+        if (cur) { note.strokes.pop(); cur = null; render(); } // 双指时取消误画
+        erasing = false;
+        scrollMode = true; lastTouchY = avgTouchY();
+        return;
+      }
+    }
+    clearTimeout(idleTimer);
+    var p = pt(e);
+    var penEraser = (e.buttons & 32) || e.button === 5;
+    pushUndo();
+    if (tool === 'eraser' || penEraser) { erasing = true; eraseAt(p); return; }
+    cur = { p: [Math.round(p.x * 10) / 10, Math.round(p.y * 10) / 10, width(e)], pend: 1 };
+    note.strokes.push(cur);
+    setView(); drawStroke(ctx, cur);
+  });
+
+  cv.addEventListener('pointermove', function (e) {
+    if (e.pointerType === 'touch' && touches[e.pointerId] != null) touches[e.pointerId] = e.clientY;
+    if (scrollMode) {
+      var y = avgTouchY();
+      scrollY -= (y - lastTouchY); lastTouchY = y;
+      clampScroll(); render(); return;
+    }
+    if (erasing) { eraseAt(pt(e)); return; }
+    if (!cur) return;
+    var list = (e.getCoalescedEvents && e.getCoalescedEvents()) || [];
+    if (!list.length) list = [e];
+    setView();
+    ctx.strokeStyle = INK; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (var i = 0; i < list.length; i++) {
+      var p = pt(list[i]), a = cur.p, n = a.length;
+      var dx = p.x - a[n - 3], dy = p.y - a[n - 2];
+      if (dx * dx + dy * dy < 0.8) continue;
+      a.push(Math.round(p.x * 10) / 10, Math.round(p.y * 10) / 10, width(list[i]));
+      seg(ctx, a, a.length - 3);
+    }
+  });
+
+  function endPointer(e) {
+    if (e.pointerType === 'touch') {
+      delete touches[e.pointerId];
+      if (scrollMode) {
+        if (!touchCount()) { scrollMode = false; save(); }
+        else lastTouchY = avgTouchY();
+        return;
+      }
+    }
+    if (erasing) { erasing = false; render(); save(); return; }
+    if (!cur) return;
+    calcBox(cur); cur = null; save();
+    scheduleAsk();
+  }
+  cv.addEventListener('pointerup', endPointer);
+  cv.addEventListener('pointercancel', endPointer);
+
+  cv.addEventListener('wheel', function (e) { e.preventDefault(); scrollY += e.deltaY; clampScroll(); render(); }, { passive: false });
+
+  function eraseAt(p) {
+    var r = 14, changed = false;
+    note.strokes = note.strokes.filter(function (s) {
+      var b = s.b; if (!b || p.x < b[0] - r || p.x > b[2] + r || p.y < b[1] - r || p.y > b[3] + r) return true;
+      for (var i = 0; i < s.p.length; i += 3) {
+        var dx = s.p[i] - p.x, dy = s.p[i + 1] - p.y;
+        if (dx * dx + dy * dy < r * r) { changed = true; return false; }
+      }
+      return true;
+    });
+    note.blocks = note.blocks.filter(function (bl) {
+      var b = blockBox(bl);
+      if (p.x >= b[0] && p.x <= b[2] && p.y >= b[1] && p.y <= b[3]) { changed = true; return false; }
+      return true;
+    });
+    if (changed) render();
+  }
+
+  // ---------- 问 AI ----------
+  function scheduleAsk() {
+    clearTimeout(idleTimer);
+    var sec = parseFloat(settings.idle);
+    if (sec > 0) idleTimer = setTimeout(function () { ask(false); }, sec * 1000);
+  }
+
+  function pendingStrokes() { return note.strokes.filter(function (s) { return s.pend && s.b; }); }
+
+  function unionBox(list) {
+    var b = [1e9, 1e9, -1e9, -1e9];
+    list.forEach(function (s) {
+      b[0] = Math.min(b[0], s.b[0]); b[1] = Math.min(b[1], s.b[1]);
+      b[2] = Math.max(b[2], s.b[2]); b[3] = Math.max(b[3], s.b[3]);
+    });
+    return b;
+  }
+
+  // 把新写的内容裁剪成一张白底图片
+  function snapshot(list, box) {
+    var m = 16, bw = box[2] - box[0] + m * 2, bh = box[3] - box[1] + m * 2;
+    var scale = Math.min(2, 1400 / Math.max(bw, bh));
+    var c = document.createElement('canvas');
+    c.width = Math.max(32, Math.round(bw * scale)); c.height = Math.max(32, Math.round(bh * scale));
+    var g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+    g.setTransform(scale, 0, 0, scale, (m - box[0]) * scale, (m - box[1]) * scale);
+    list.forEach(function (s) { drawStroke(g, { p: s.p, c: '#000' }); });
+    return c.toDataURL('image/jpeg', 0.88);
+  }
+
+  function systemPrompt() {
+    var n = parseInt(settings.maxChars, 10) || 150;
+    return [
+      '你住在用户的手写笔记本里，是他的学习伙伴和老师。用户在纸上手写，你会收到他刚写下内容的图片（黑色笔迹，可能有涂改、公式或简单图形）。',
+      '请：',
+      '1. 认真辨认图片中的手写内容，写入 read 字段（公式用纯文本表示）。',
+      '2. 像在同一张纸上回信一样，用用户所用的语言自然地回应，写入 reply 字段。可以回答问题、补充思路、追问、或在用户要求时出题考他。',
+      '3. 回复会以手写字体显示在纸上：不要用 Markdown、井号、星号、表格或表情；需要分点时用“1. 2. 3.”并换行；公式用纯文本，例如 x^2 + 1 = 0。',
+      '4. 回复尽量简洁，不超过约 ' + n + ' 字，除非用户明确要求详细。',
+      '5. 如果图片内容明显是一句还没写完的话，把 wait 设为 true、reply 留空；如果只是无意义的涂鸦，reply 留空。',
+      '只输出 JSON，格式：{"read": "...", "reply": "...", "wait": false}',
+      settings.persona ? ('用户的额外要求：' + settings.persona) : ''
+    ].join('\n');
+  }
+
+  function buildMessages(img) {
+    var msgs = [{ role: 'system', content: systemPrompt() }];
+    var hist = note.history.slice(-10);
+    hist.forEach(function (h) {
+      msgs.push({ role: 'user', content: '（我在纸上写了）' + h.r });
+      msgs.push({ role: 'assistant', content: JSON.stringify({ read: h.r, reply: h.a, wait: false }) });
+    });
+    msgs.push({ role: 'user', content: [
+      { type: 'text', text: '这是我刚在纸上写的内容，请辨认并回应（输出 json）。' },
+      { type: 'image_url', image_url: { url: img } }
+    ] });
+    return msgs;
+  }
+
+  function callAI(messages) {
+    var url = settings.url.replace(/\/+$/, '');
+    if (!/\/chat\/completions$/.test(url)) url += '/chat/completions';
+    var body = {
+      model: settings.model,
+      messages: messages,
+      max_tokens: settings.think ? 4000 : 1500,
+      stream: false,
+      response_format: { type: 'json_object' },
+      thinking: { type: settings.think ? 'enabled' : 'disabled' }
+    };
+    var ctrl = window.AbortController ? new AbortController() : null;
+    var to = setTimeout(function () { if (ctrl) ctrl.abort(); }, 90000);
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + settings.key },
+      body: JSON.stringify(body),
+      signal: ctrl ? ctrl.signal : undefined
+    }).then(function (res) {
+      clearTimeout(to);
+      return res.text().then(function (txt) {
+        if (!res.ok) {
+          var m = txt; try { m = JSON.parse(txt).error.message; } catch (e) {}
+          throw new Error('HTTP ' + res.status + '：' + m);
+        }
+        var data = JSON.parse(txt);
+        return data.choices[0].message.content || '';
+      });
+    }, function (err) {
+      clearTimeout(to);
+      throw new Error(err && err.name === 'AbortError' ? '请求超时' : ('网络错误：' + (err && err.message)));
+    });
+  }
+
+  function parseReply(txt) {
+    var s = String(txt).trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+    try { var o = JSON.parse(s); return { read: o.read || '', reply: o.reply || '', wait: !!o.wait }; } catch (e) {}
+    var m = s.match(/\{[\s\S]*\}/);
+    if (m) { try { var o2 = JSON.parse(m[0]); return { read: o2.read || '', reply: o2.reply || '', wait: !!o2.wait }; } catch (e) {} }
+    return { read: '', reply: s, wait: false };
+  }
+
+  function ask(manual) {
+    clearTimeout(idleTimer);
+    if (busy) return;
+    if (cur) return; // 还在写
+    var list = pendingStrokes();
+    if (!list.length) { if (manual) toast('先写点什么吧'); return; }
+    if (!settings.key) { toast('请先在“设置”里填写 API Key'); openSettings(); return; }
+    var box = unionBox(list);
+    var img = snapshot(list, box);
+    var noteRef = note;
+    busy = { box: box }; status('AI 正在看…'); render();
+    callAI(buildMessages(img)).then(function (txt) {
+      var r = parseReply(txt);
+      busy = false; status('');
+      if (r.wait && !manual) { render(); return; } // 句子没写完，继续等
+      list.forEach(function (s) { delete s.pend; });
+      if (r.read) {
+        noteRef.history.push({ r: r.read, a: r.reply });
+        if (noteRef.history.length > 40) noteRef.history.shift();
+        if (/^笔记 \d/.test(noteRef.title) && noteRef.history.length === 1) {
+          noteRef.title = r.read.replace(/\s+/g, ' ').slice(0, 14); refreshNoteList();
+        }
+      }
+      if (r.reply && noteRef === note) addReply(r.reply, box);
+      else render();
+      save();
+    }).catch(function (err) {
+      busy = false; status('');
+      render();
+      toast('AI 出错：' + err.message, 6000);
+    });
+  }
+
+  function wrap(text, maxW, fs) {
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.font = fs + 'px ' + AI_FONT;
+    var out = [];
+    String(text).replace(/\r/g, '').split('\n').forEach(function (para) {
+      var line = '';
+      var chars = Array.from ? Array.from(para) : para.split('');
+      for (var i = 0; i < chars.length; i++) {
+        var t = line + chars[i];
+        if (line && ctx.measureText(t).width > maxW) {
+          // 英文单词尽量不拆开
+          var sp = line.lastIndexOf(' ');
+          if (/[A-Za-z0-9]/.test(chars[i]) && sp > 0 && line.length - sp < 16) {
+            out.push(line.slice(0, sp)); line = line.slice(sp + 1) + chars[i];
+          } else { out.push(line); line = chars[i] === ' ' ? '' : chars[i]; }
+        } else line = t;
+      }
+      out.push(line);
+    });
+    ctx.restore();
+    while (out.length && !out[out.length - 1]) out.pop();
+    return out;
+  }
+
+  function collides(r) {
+    var hit = null;
+    function test(b) {
+      if (b[0] < r[2] && b[2] > r[0] && b[1] < r[3] && b[3] > r[1]) { if (!hit || b[3] > hit) hit = b[3]; }
+    }
+    note.strokes.forEach(function (s) { if (s.b) test(s.b); });
+    note.blocks.forEach(function (bl) { test(blockBox(bl)); });
+    return hit;
+  }
+
+  function addReply(text, box) {
+    var fs = parseInt(settings.fontSize, 10) || 26;
+    var fontLoad = (document.fonts && document.fonts.load) ? document.fonts.load(fs + 'px "LXGW WenKai"', text) : Promise.resolve();
+    var timeout = new Promise(function (r) { setTimeout(r, 2500); });
+    Promise.race([fontLoad, timeout]).catch(function () {}).then(function () {
+      var margin = 24;
+      var x = Math.max(margin, Math.min(box[0], W * 0.45));
+      var w = W - x - margin;
+      var lines = wrap(text, w, fs);
+      var lh = fs * 1.5, h = lines.length * lh;
+      var y = box[3] + 14;
+      for (var i = 0; i < 100; i++) {
+        var hit = collides([x, y, x + w, y + h]);
+        if (hit == null) break;
+        y = hit + 14;
+      }
+      var bl = { x: x, y: Math.round(y), w: w, fs: fs, lines: lines, text: text, shown: 0 };
+      pushUndo();
+      note.blocks.push(bl);
+      var total = lines.join('').length;
+      // 让回复出现在视野中
+      if (bl.y + Math.min(h, H * 0.6) > scrollY + H) { scrollY = bl.y + Math.min(h, H * 0.6) - H + 40; clampScroll(); }
+      clearInterval(animTimer);
+      animTimer = setInterval(function () {
+        bl.shown += 1;
+        if (bl.shown >= total) { delete bl.shown; clearInterval(animTimer); save(); }
+        render();
+      }, 45);
+    });
+  }
+
+  // ---------- 工具栏 ----------
+  function refreshNoteList() {
+    var sel = $('noteSel'); sel.innerHTML = '';
+    Object.keys(notes).map(function (k) { return notes[k]; })
+      .sort(function (a, b) { return (b.created || 0) - (a.created || 0); })
+      .forEach(function (n) {
+        var o = document.createElement('option'); o.value = n.id; o.textContent = n.title;
+        if (n.id === curId) o.selected = true; sel.appendChild(o);
+      });
+  }
+  function switchNote(id) {
+    note.scrollY = scrollY;
+    clearInterval(animTimer); note.blocks.forEach(function (b) { delete b.shown; });
+    curId = id; note = notes[id]; note.strokes.forEach(calcBox);
+    scrollY = note.scrollY || 0; undoStack = []; clampScroll();
+    refreshNoteList(); render(); save();
+  }
+  function setTool(t) { tool = t; $('bPen').className = t === 'pen' ? 'on' : ''; $('bEraser').className = t === 'eraser' ? 'on' : ''; }
+
+  $('noteSel').onchange = function () { switchNote(this.value); };
+  $('bNew').onclick = function () { switchNote(newNote()); };
+  $('bDel').onclick = function () {
+    if (!confirm('删除笔记“' + note.title + '”？')) return;
+    delete notes[curId];
+    if (!Object.keys(notes).length) newNote();
+    curId = Object.keys(notes)[0]; note = null;
+    note = notes[curId]; switchNote(curId);
+  };
+  $('bPen').onclick = function () { setTool('pen'); };
+  $('bEraser').onclick = function () { setTool('eraser'); };
+  $('bUndo').onclick = function () {
+    if (!undoStack.length) { toast('没有可撤销的了'); return; }
+    var st = JSON.parse(undoStack.pop());
+    clearInterval(animTimer);
+    note.strokes = st.s; note.blocks = st.b; note.strokes.forEach(calcBox);
+    note.blocks.forEach(function (b) { delete b.shown; });
+    render(); save();
+  };
+  $('bClear').onclick = function () {
+    if (!confirm('清空这一页（包括和 AI 的对话记忆）？')) return;
+    pushUndo(); note.strokes = []; note.blocks = []; note.history = []; scrollY = 0; render(); save();
+  };
+  $('bAsk').onclick = function () { ask(true); };
+
+  // ---------- 设置 ----------
+  function openSettings() {
+    $('sKey').value = settings.key; $('sUrl').value = settings.url; $('sModel').value = settings.model;
+    $('sThink').checked = !!settings.think; $('sPenOnly').checked = !!settings.penOnly;
+    $('sIdle').value = settings.idle; $('sMax').value = settings.maxChars; $('sFont').value = settings.fontSize;
+    $('sPersona').value = settings.persona;
+    $('mask').className = 'show';
+  }
+  function readSettings() {
+    settings.key = $('sKey').value.trim(); settings.url = $('sUrl').value.trim() || defaults.url;
+    settings.model = $('sModel').value.trim() || defaults.model;
+    settings.think = $('sThink').checked; settings.penOnly = $('sPenOnly').checked;
+    settings.idle = parseFloat($('sIdle').value); if (isNaN(settings.idle)) settings.idle = defaults.idle;
+    settings.maxChars = parseInt($('sMax').value, 10) || defaults.maxChars;
+    settings.fontSize = parseInt($('sFont').value, 10) || defaults.fontSize;
+    settings.persona = $('sPersona').value.trim();
+  }
+  $('bSet').onclick = openSettings;
+  $('sCancel').onclick = function () { $('mask').className = ''; };
+  $('sSave').onclick = function () { readSettings(); saveSettings(); $('mask').className = ''; toast('已保存'); };
+  $('sTest').onclick = function () {
+    readSettings();
+    if (!settings.key) { toast('请先填 API Key'); return; }
+    // 用一张画着“你好”的小图测试，顺便验证模型能看图
+    var c = document.createElement('canvas'); c.width = 240; c.height = 100;
+    var g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, 240, 100);
+    g.fillStyle = '#000'; g.font = '56px ' + AI_FONT; g.textBaseline = 'middle'; g.fillText('你好', 40, 52);
+    toast('正在测试…', 20000);
+    callAI([{ role: 'system', content: systemPrompt() }, { role: 'user', content: [
+      { type: 'text', text: '这是我写的内容（输出 json）。' }, { type: 'image_url', image_url: { url: c.toDataURL('image/jpeg', 0.9) } }] }])
+      .then(function (t) { var r = parseReply(t); toast('连接成功！AI 看到：' + (r.read || '?') + '，回复：' + (r.reply || '').slice(0, 40), 6000); })
+      .catch(function (e) { toast('测试失败：' + e.message, 8000); });
+  };
+
+  // ---------- 启动 ----------
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', function () { setTimeout(resize, 300); });
+  document.addEventListener('visibilitychange', function () { if (document.hidden) save(); });
+  refreshNoteList();
+  resize();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(render);
+  if (!window.PointerEvent) toast('这个浏览器太旧（不支持 Pointer Events），请安装新版 Chrome', 10000);
+  if (!settings.key) setTimeout(openSettings, 300);
+
+  // 供自动化测试使用
+  window.__inkai = { ask: ask, settings: settings, getNote: function () { return note; }, render: render };
+})();
+</script>
+</body>
+</html>

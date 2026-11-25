@@ -1,0 +1,9 @@
+{
+  "name": "墨语 · 手写 AI 笔记",
+  "short_name": "墨语",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f7f4ec",
+  "theme_color": "#f7f4ec"
+}
